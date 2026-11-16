@@ -1,0 +1,28 @@
+diff --git a/lib/http-api/utils.js b/lib/http-api/utils.js
+index b34b58f3a1f5a33c55c5474a0e25f75e275c4e94..833987719524095a096a9310ff03823371732eeb 100644
+--- a/lib/http-api/utils.js
++++ b/lib/http-api/utils.js
+@@ -21,6 +21,9 @@ import { ConnectionError, HTTPError, MatrixError, MatrixSafetyError, MatrixSafet
+ 
+ // Ponyfill for https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/timeout
+ export function timeoutSignal(ms) {
++  if (typeof AbortSignal.timeout === "function") {
++    return AbortSignal.timeout(ms);
++  }
+   const controller = new AbortController();
+   setTimeout(() => {
+     controller.abort();
+diff --git a/src/http-api/utils.ts b/src/http-api/utils.ts
+index 8e17de0fa1c751be6c89c6bbb32e614307a7a05c..53e78288bdd404b6b4baab9caca2ef69dec254f3 100644
+--- a/src/http-api/utils.ts
++++ b/src/http-api/utils.ts
+@@ -29,6 +29,9 @@ import {
+ 
+ // Ponyfill for https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/timeout
+ export function timeoutSignal(ms: number): AbortSignal {
++    if (typeof AbortSignal.timeout === "function") {
++        return AbortSignal.timeout(ms);
++    }
+     const controller = new AbortController();
+     setTimeout(() => {
+         controller.abort();

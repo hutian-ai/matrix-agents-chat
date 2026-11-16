@@ -1,0 +1,16 @@
+[
+  {
+    "id": "assistant",
+    "name": "协作助手",
+    "description": "通用讨论与文字协作",
+    "sessionFile": ".local/matrix-peer-session.json",
+    "hostConfigFile": ".local/agent-host.env"
+  },
+  {
+    "id": "reviewer",
+    "name": "评审助手",
+    "description": "检查方案，指出遗漏与改进建议",
+    "sessionFile": ".local/matrix-reviewer-session.json",
+    "hostConfigFile": ".local/reviewer-host.env"
+  }
+]

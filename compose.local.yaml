@@ -1,0 +1,28 @@
+name: matrix-team-chat
+
+services:
+  synapse:
+    image: matrixdotorg/synapse:v1.164.2
+    container_name: matrix-team-chat-synapse
+    user: "${SYNAPSE_RUN_AS:?请先准备 .local/synapse.env}"
+    restart: unless-stopped
+    environment:
+      SYNAPSE_SERVER_NAME: matrix-team-chat.localhost
+      SYNAPSE_REPORT_STATS: "no"
+    ports:
+      - "127.0.0.1:8008:8008"
+    volumes:
+      - ./.local/synapse:/data
+    networks:
+      - local_database
+    healthcheck:
+      test: ["CMD", "curl", "-fSs", "http://localhost:8008/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 30
+
+networks:
+  local_database:
+    external: true
+    name: hutian-local_default

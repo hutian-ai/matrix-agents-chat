@@ -1,0 +1,2 @@
+# Generated diffs contain significant whitespace in their context lines.
+patches/*.patch -whitespace

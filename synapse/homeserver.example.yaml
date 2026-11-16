@@ -1,0 +1,30 @@
+# 本地结构示例。实际配置保存在 .local/synapse/homeserver.yaml。
+# 先用官方 generate 生成密钥和基础配置，再应用下面这些设置。
+server_name: matrix-team-chat.localhost
+public_baseurl: http://127.0.0.1:8008/
+
+listeners:
+  - port: 8008
+    type: http
+    tls: false
+    x_forwarded: false
+    bind_addresses: ["0.0.0.0"]
+    resources:
+      - names: [client]
+        compress: false
+
+database:
+  name: psycopg2
+  args:
+    host: hutian-postgres
+    port: 5432
+    user: matrix_chat
+    password: REPLACE_WITH_PRIVATE_DATABASE_PASSWORD
+    dbname: matrix_chat
+    sslmode: disable
+    cp_min: 1
+    cp_max: 5
+
+report_stats: false
+enable_registration: false
+federation_domain_whitelist: []

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.local/
+.local.lock/
+artifacts/
+*.tgz
+.serena/
+.env
+*.sqlite*

@@ -1,0 +1,4 @@
+allowBuilds:
+  esbuild: true
+patchedDependencies:
+  matrix-js-sdk@45.0.0: patches/matrix-js-sdk@45.0.0.patch
