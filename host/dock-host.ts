@@ -31,7 +31,12 @@ interface Job {
   nodeId?: string;
   provider?: string;
   model?: string;
-  config?: { effort?: string; serviceTier?: string; mode?: string };
+  config?: {
+    effort?: string;
+    serviceTier?: string;
+    mode?: string;
+    nativeMemory?: "disabled";
+  };
   interactive?: boolean;
   taskPolicyBridge?: boolean;
 }
@@ -80,7 +85,12 @@ export interface HostContext {
   provider?: string;
   model?: string;
   connectionId?: string;
-  config?: { effort?: string; serviceTier?: string; mode?: string };
+  config?: {
+    effort?: string;
+    serviceTier?: string;
+    mode?: string;
+    nativeMemory?: "disabled";
+  };
   silentNoUpdate?: boolean;
   executionMode?: "text" | "task";
   timeoutMs?: number;

@@ -772,7 +772,10 @@ async function main() {
           Array.isArray(context.config) ||
           Object.entries(context.config).some(
             ([key, value]) =>
-              !["effort", "serviceTier", "mode"].includes(key) ||
+              !["effort", "serviceTier", "mode", "nativeMemory"].includes(
+                key,
+              ) ||
+              (key === "nativeMemory" && value !== "disabled") ||
               typeof value !== "string" ||
               !value.trim() ||
               value.length > 80,

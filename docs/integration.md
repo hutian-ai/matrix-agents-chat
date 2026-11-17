@@ -50,6 +50,8 @@ pnpm agent --event '$原消息ID' --status
 
 `--status` 只查原运行。重复执行原来的 `agent --event` 会返回既有回复，或继续查询原回执；不会因为结果未知就再发起一次模型任务。回复发送中断时，示例复用已保存的结果和同一事务 ID。
 
+调用方自行管理长期记忆时，可为新 Codex 请求传入 `context.config.nativeMemory: "disabled"`。宿主冻结并透传此配置，既有 session key 已包含 config，因此策略变化会建立新原生会话；授权聊天历史仍作为本轮上下文提供。缺省沿用原生记忆设置，其他 Provider 不接受该 Codex 选项。需要支持此选项的 Dock；旧版本显式拒绝，不静默降级。原 job/receipt 不因策略变化而修改或重放。
+
 持续观察房间：
 
 ```sh
