@@ -115,7 +115,7 @@ export async function runExecution() {
     if (payload?.type === "codex_event" && payload.item?.type === "reasoning") {
       if (
         payload.kind !== "item" ||
-        !["started", "completed"].includes(payload.stage) ||
+        !["started", "updated", "completed"].includes(payload.stage) ||
         typeof payload.item.id !== "string"
       )
         return;
@@ -135,6 +135,20 @@ export async function runExecution() {
     }
     const tail = state.events.at(-1);
     if (
+      type === "event" &&
+      payload?.type === "codex_event" &&
+      payload.kind === "item" &&
+      payload.stage === "updated" &&
+      payload.item?.type === "reasoning" &&
+      tail?.type === type &&
+      tail.payload?.type === "codex_event" &&
+      tail.payload.stage === "updated" &&
+      tail.payload.item?.id === payload.item.id
+    ) {
+      // Latest public snapshot replaces only another update, never lifecycle timestamps.
+      tail.payload = payload;
+      tail.at = new Date().toISOString();
+    } else if (
       type === "event" &&
       payload?.type === "text_delta" &&
       tail?.type === type &&
@@ -337,13 +351,14 @@ export async function runExecution() {
     });
     // Immutable receipt stays compatible with the existing CLI's observation path.
     const receipt = await open(resolve(values.receipt), "wx", 0o600);
-    const {
-      sessionKey,
-      retainSession,
-      resumeSessionId,
-      previousRunId,
-      ...receiptInput
-    } = input;
+    const receiptInput = {
+      provider: input.provider,
+      runId: input.runId,
+      prompt: input.prompt,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.config ? { config: input.config } : {}),
+      ...(input.tools ? { tools: input.tools } : {}),
+    };
     try {
       await receipt.writeFile(
         JSON.stringify({

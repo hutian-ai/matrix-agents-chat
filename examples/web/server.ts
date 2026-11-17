@@ -13,6 +13,8 @@ import {
   ensureRoom,
   inviteMember,
   joinRoom,
+  isRoomArchived,
+  setRoomArchived,
 } from "../../src/room.js";
 import {
   HostRequestError,
@@ -313,7 +315,9 @@ async function main() {
     }
   });
 
-  app.get("/api/rooms", async () => {
+  app.get("/api/rooms", async (event) => {
+    const includeArchived =
+      new URL(event.req.url).searchParams.get("includeArchived") === "true";
     const own = await human.getJoinedRooms();
     const rooms = await Promise.all(
       own.joined_rooms.map(async (id) => {
@@ -329,6 +333,8 @@ async function main() {
             return null;
           throw error;
         }
+        const archived = await isRoomArchived(human, id);
+        if (archived && !includeArchived) return null;
         const creation = await human.getStateEvent(
           id,
           EventType.RoomCreate,
@@ -339,6 +345,7 @@ async function main() {
           id,
           name: await roomName(id),
           kind: kind === "direct" || kind === "channel" ? kind : "group",
+          archived,
         };
       }),
     );
@@ -352,6 +359,16 @@ async function main() {
       agents: agents.map(publicAgent),
       defaultRoomId,
     };
+  });
+
+  app.post("/api/rooms/archive", async (event) => {
+    const body = await readBody<{ roomId?: unknown; archived?: unknown }>(
+      event,
+    );
+    const roomId = await requireRoom(body?.roomId);
+    if (typeof body?.archived !== "boolean")
+      reject(400, "请选择归档或恢复房间。");
+    return setRoomArchived(human, roomId, body.archived);
   });
 
   app.post("/api/rooms", async (event) => {
@@ -548,14 +565,25 @@ async function main() {
             config: job?.config ?? null,
             state: running
               ? "running"
-              : job?.replyEventId
-                ? "replied"
-                : job?.state === "skipped"
-                  ? "skipped"
-                  : (outcome?.result?.state ?? job?.state ?? "idle"),
+              : job &&
+                  [
+                    "replied",
+                    "skipped",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                  ].includes(job.state)
+                ? job.state
+                : (outcome?.result?.state ?? job?.state ?? "idle"),
             replyEventId: job?.replyEventId ?? null,
             hasReceipt: job?.hasReceipt ?? false,
-            error: outcome?.error ?? outcome?.result?.reason ?? null,
+            error:
+              job && ["replied", "skipped", "completed"].includes(job.state)
+                ? null
+                : (job?.error ??
+                  outcome?.error ??
+                  outcome?.result?.reason ??
+                  null),
             checkedAt: outcome?.checkedAt ?? 0,
             activity: await readHostActivity(agent.client, roomId, eventId),
           };
@@ -1077,11 +1105,22 @@ async function main() {
       job: job
         ? {
             ...job,
-            error: outcome?.error ?? outcome?.result?.reason ?? null,
-            state: ["replied", "skipped", "completed"].includes(job.state)
-              ? job.state
-              : own
-                ? "running"
+            error: ["replied", "skipped", "completed"].includes(job.state)
+              ? null
+              : (job.error ??
+                outcome?.error ??
+                outcome?.result?.reason ??
+                null),
+            state: own
+              ? "running"
+              : [
+                    "replied",
+                    "skipped",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                  ].includes(job.state)
+                ? job.state
                 : (outcome?.result?.state ?? job.state),
           }
         : null,

@@ -6,6 +6,34 @@ import {
   type MatrixClient,
 } from "matrix-js-sdk";
 
+const archivedRoomTag = "org.hutian.agents-chat.archived";
+
+/** Per-user directory preference; membership and message history stay intact. */
+export async function isRoomArchived(client: MatrixClient, roomId: string) {
+  try {
+    const { tags } = await client.getRoomTags(roomId);
+    return Object.hasOwn(tags, archivedRoomTag);
+  } catch (error) {
+    if (error instanceof MatrixError && error.errcode === "M_NOT_FOUND")
+      return false;
+    throw error;
+  }
+}
+
+/** Restore by clearing the tag; never leave the room or redact its messages. */
+export async function setRoomArchived(
+  client: MatrixClient,
+  roomId: string,
+  archived: boolean,
+) {
+  if (archived) await client.setRoomTag(roomId, archivedRoomTag, {});
+  else if (await isRoomArchived(client, roomId))
+    await client.deleteRoomTag(roomId, archivedRoomTag);
+  if ((await isRoomArchived(client, roomId)) !== archived)
+    throw new Error("ROOM_ARCHIVE_NOT_CONFIRMED");
+  return { roomId, archived };
+}
+
 export async function assertPlaintextRoom(
   client: MatrixClient,
   roomId: string,

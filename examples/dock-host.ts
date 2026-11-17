@@ -48,6 +48,30 @@ export interface HostResult {
 }
 
 export class HostRequestError extends Error {}
+const executionStates = new Set([
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "unknown",
+]);
+function executionReason(response: {
+  state?: string;
+  result?: { error?: unknown };
+  error?: unknown;
+}) {
+  const error = response.result?.error ?? response.error;
+  if (
+    error === "acp_update_order_mismatch" ||
+    error === "acp_update_identity_mismatch"
+  )
+    return "执行事件核对异常，完成状态尚未确认；已有内容保留，需要修复执行连接后核对原运行。";
+  if (error === "application_disconnected" || error === "server_disconnected")
+    return "执行连接中断，完成状态尚未确认；连接恢复后核对原运行。";
+  if (response.state === "failed")
+    return "执行失败，未确认完整交付；请核对原运行记录。";
+  return undefined;
+}
 export interface HostContext {
   toolBridgeUrl?: string;
   toolBridgeToken?: string;
@@ -117,32 +141,34 @@ export async function inspectHostRequest(
     (await exists(`${directory}/reply.json`))
   )
     state = "completed";
-  else if (
-    !job.skipped &&
-    !job.replyEventId &&
-    (await exists(`${directory}/status.stdout.json`))
-  ) {
-    // A failed/offline status command may leave an empty legacy snapshot.
-    // This optional observation must never make the room's history unreadable.
-    try {
-      const observation = JSON.parse(
-        await readFile(`${directory}/status.stdout.json`, "utf8"),
-      );
-      if (
-        observation?.runId === job.runId &&
-        typeof observation.state === "string"
-      )
-        state = observation.state;
-    } catch (error) {
-      if (
-        !(error instanceof SyntaxError) &&
-        (error as NodeJS.ErrnoException).code !== "ENOENT"
-      )
-        throw error;
+  let error: string | undefined;
+  if (state === "unknown")
+    for (const file of ["status.stdout.json", "run.stdout.json"]) {
+      // A failed/offline status command may leave an empty legacy snapshot.
+      // This optional observation must never make the room's history unreadable.
+      try {
+        const observation = JSON.parse(
+          await readFile(`${directory}/${file}`, "utf8"),
+        );
+        if (
+          observation?.runId === job.runId &&
+          executionStates.has(observation.state)
+        ) {
+          state = observation.state;
+          error = executionReason(observation);
+          break;
+        }
+      } catch (error) {
+        if (
+          !(error instanceof SyntaxError) &&
+          (error as NodeJS.ErrnoException).code !== "ENOENT"
+        )
+          throw error;
+      }
     }
-  }
   return {
     state,
+    error,
     runId: job.runId,
     replyEventId: job.replyEventId ?? null,
     instructionsVersion: job.instructionsVersion,
@@ -350,6 +376,7 @@ export async function runHostRequest(args: {
       failure = "Dock 运行尚未确认完成，回执已保留；再次操作只查询原运行。";
       const action = returning ? "status" : "run";
       const commandArgs = ["--receipt", receipt];
+      if (returning) commandArgs.push("--reconcile");
       if (!returning && job.interactive) {
         if (args.context?.toolBridgeUrl && args.context?.toolBridgeToken) {
           const bridge = resolve(directory, "caller-tools.json");
@@ -538,18 +565,25 @@ export async function runHostRequest(args: {
       await writeFile(`${directory}/${action}.stderr.log`, execution.stderr, {
         mode: 0o600,
       });
-      const response = execution.stdout.trim()
-        ? JSON.parse(execution.stdout)
-        : null;
+      let response;
+      try {
+        response = execution.stdout.trim()
+          ? JSON.parse(execution.stdout)
+          : null;
+      } catch {
+        response = null;
+      }
       // Only publish a confirmed observation for the same native run.
-      if (response?.runId === job.runId && typeof response.state === "string") {
+      const validResponse =
+        response?.runId === job.runId && executionStates.has(response.state);
+      if (validResponse) {
         await writeFileAtomic(
           `${directory}/${action}.stdout.json`,
           JSON.stringify(response),
           { mode: 0o600 },
         );
       }
-      if (!response) {
+      if (!validResponse) {
         return {
           state: "unknown",
           runId: job.runId,
@@ -557,15 +591,25 @@ export async function runHostRequest(args: {
           replySent: false,
           reason: execution.stderr.includes("device_offline")
             ? "原执行设备离线，尚未确认结果；设备恢复后继续核对同一运行。"
-            : "原运行状态查询未返回有效结果；保留原回执，稍后重试。",
+            : /invalid_run_receipt|receipt_identity_conflict/.test(
+                  execution.stderr,
+                )
+              ? "原运行回执无法被查询端读取，需要修复回执兼容或身份配置；原记录已保留。"
+              : response
+                ? "查询返回的运行标识或状态不匹配，未采用该结果；请核对执行连接。"
+                : execution.exitCode !== 0
+                  ? "原运行状态查询失败，原记录已保留；请核对执行连接与服务日志。"
+                  : "执行端暂未提供原运行记录，结果尚未确认；恢复后继续核对原运行。",
         };
       }
       if (args.status) {
+        const reason = executionReason(response);
         return {
           state: response?.state ?? "unknown",
           runId: job.runId,
           replyEventId: job.replyEventId ?? null,
           observedOnly: true,
+          ...(reason ? { reason } : {}),
         };
       }
       if (
@@ -574,7 +618,7 @@ export async function runHostRequest(args: {
         response.state !== "completed" ||
         response.result?.state !== "completed"
       ) {
-        let reason: string | undefined;
+        let reason = executionReason(response);
         if (response.state === "cancelled") {
           const activity = await readFile(
             resolve(directory, "activity.json"),
@@ -596,12 +640,6 @@ export async function runHostRequest(args: {
           ...(reason ? { reason } : {}),
           resumed: returning,
           replySent: false,
-          ...(response?.result?.error === "application_disconnected"
-            ? {
-                reason:
-                  "Dock 应用连接中断，本次运行未完成；保留原回执，未重新派发。",
-              }
-            : {}),
         };
       }
       const messages: unknown = response.result.messages;
