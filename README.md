@@ -117,3 +117,7 @@ The optional host accepts an explicit task execution mode, a bounded per-request
 ### Interactive host integration
 
 New applications can opt into real tool-backed chat with `context.interactive: true` on `/api/agent`. The optional host returns public activity, native requests, confirmed controls, a persistent admission queue and collected outputs. It uses the public Dock SDK; the core Matrix SDK remains independent. The existing example UI retains its manual message/reply flow. See [stage 20](docs/stage-20.md) for interfaces, independent use and actual verification boundaries.
+
+### 可选执行宿主入口
+
+执行宿主实现位于 `host/`；`pnpm host` 启动正式 HTTP 入口，`pnpm web` 先构建独立网页再启动宿主。旧 `examples` 路径仅作兼容转发，原 `.local` 身份、队列与回执位置不变。`@hutian-ai/matrix-agents-chat/host-client` 提供本机客户端，检查响应的 host protocol 1；它与 Matrix 通信 SDK 分开导出，不改变 Matrix 协议。当前宿主按源码部署，尚未发布独立宿主制品。

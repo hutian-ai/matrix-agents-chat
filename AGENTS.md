@@ -28,3 +28,5 @@ The user explicitly authorized continuous completion of this project and pushing
 The current product includes native Matrix communication, a local multi-room / multi-Agent web client, human-directed handoff, independent Docker setup, passwordless Application Service identity provisioning, CLI identity profiles and optional Harness Dock execution. Long-term hutian world, project management, memory and autonomous collaboration remain external concerns.
 
 Web execution uses an independent host worker so web process failure does not close the Dock application connection. Preserve original job / receipt hashes; never replay an unknown execution. Worker / Dock failure still requires observing the original result and may be terminal; do not promise arbitrary process failures preserve model execution.
+
+- 2026-11-17：可选执行宿主正式实现移到 `host/`，独立网页前端仍在 `examples/web`。旧 examples 宿主文件仅兼容转发。新增宿主实现放在 host，不能恢复两份引擎；保留同级路径下的原 `.local` 身份/回执/锁和 worker 进程边界。宿主客户端通过 `./host-client` 子路径导出，host protocol 当前为 1。

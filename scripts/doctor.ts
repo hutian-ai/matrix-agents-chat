@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadDotenv } from "c12";
 import { cleanEnv, str } from "envalid";
-import { loadAgentProfiles } from "../examples/agents.js";
+import { loadAgentProfiles } from "../host/agents.js";
 import { loadLocalClient, loadLocalRoom } from "../src/local.js";
 import { assertPlaintextRoom } from "../src/room.js";
 

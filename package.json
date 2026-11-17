@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "description": "基于 Matrix 的人和 Agent 通信 SDK：房间、成员、消息、历史与断线补收",
+  "description": "\u57fa\u4e8e Matrix \u7684\u4eba\u548c Agent \u901a\u4fe1 SDK\uff1a\u623f\u95f4\u3001\u6210\u5458\u3001\u6d88\u606f\u3001\u5386\u53f2\u4e0e\u65ad\u7ebf\u8865\u6536",
   "type": "module",
   "engines": {
     "node": ">=22.16.0"
@@ -18,8 +18,8 @@
     "matrix:login:peer": "node --import tsx src/login.ts --peer",
     "matrix:room": "node --import tsx src/room-cli.ts",
     "chat": "node --import tsx src/message-cli.ts",
-    "agent": "node --import tsx examples/dock-host.ts",
-    "web": "pnpm web:build && node --import tsx examples/web/server.ts",
+    "agent": "node --import tsx host/dock-host.ts",
+    "web": "pnpm web:build && pnpm host",
     "web:build": "vite build --config examples/web/vite.config.ts",
     "check": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
@@ -34,7 +34,8 @@
     "format": "prettier --write --ignore-unknown .",
     "format:check": "prettier --check --ignore-unknown .",
     "prepare": "husky",
-    "lint:staged": "lint-staged"
+    "lint:staged": "lint-staged",
+    "host": "node --import tsx host/web/server.ts"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",
@@ -71,6 +72,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./host-client": {
+      "types": "./dist/host-client.d.ts",
+      "import": "./dist/host-client.js"
     }
   },
   "files": [
