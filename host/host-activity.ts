@@ -27,7 +27,7 @@ export async function readHostActivity(
       : ["failed", "cancelled"].includes(job.state)
         ? job.state
         : null;
-    if (confirmed && value.state !== confirmed) {
+    if (confirmed) {
       value.state = confirmed;
       value.steering = false;
       value.interactions = value.interactions.map(
@@ -36,20 +36,18 @@ export async function readHostActivity(
             ? { ...request, status: "expired" }
             : request,
       );
-      if (
-        !value.finishedAt &&
-        (!value.outputsState || value.outputsState === "pending")
-      )
+      if (!value.outputsState || value.outputsState === "pending")
         value.outputsState = "unconfirmed";
     }
     value.outputsState ??= value.outputs?.length ? "available" : "none";
     // Output content lives behind a separate authenticated endpoint.
     return {
       ...value,
-      outputs: (value.outputs ?? []).map(
-        ({ contentBase64: _, ...metadata }: Record<string, unknown>) =>
-          metadata,
-      ),
+      outputs: (value.outputs ?? []).map((output: Record<string, unknown>) => {
+        const metadata = { ...output };
+        delete metadata.contentBase64;
+        return metadata;
+      }),
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;

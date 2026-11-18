@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadDotenv } from "c12";
@@ -21,6 +21,7 @@ interface Job {
   runId: string;
   agentDeviceId: string;
   replyEventId?: string;
+  deliveryError?: string;
   silentNoUpdate?: boolean;
   skipped?: boolean;
   connectionFile?: "dock-client.json";
@@ -53,6 +54,39 @@ export interface HostResult {
 }
 
 export class HostRequestError extends Error {}
+
+/** Native completion and an acceptable chat delivery are separate facts. */
+export function finalAnswer(result: {
+  messages?: unknown;
+  stopReason?: unknown;
+}): { text: string; error?: never } | { text?: never; error: string } {
+  const text = Array.isArray(result.messages)
+    ? result.messages
+        .filter(
+          (message) =>
+            message?.phase === "final_answer" &&
+            typeof message.text === "string",
+        )
+        .map((message) => message.text)
+        .join("\n")
+        .trim()
+    : "";
+  if (!text) {
+    const reasons: Record<string, string> = {
+      max_tokens: "模型达到输出长度限制，本轮没有完整的最终回答。",
+      max_turn_requests: "模型达到本轮请求次数限制，没有交付最终回答。",
+      refusal: "模型拒绝了本次请求，没有可交付的最终回答。",
+    };
+    return {
+      error:
+        reasons[String(result.stopReason)] ??
+        "执行已结束，但未提供可确认的最终回答；过程保留，未发送替代回复。",
+    };
+  }
+  if (Buffer.byteLength(text, "utf8") > 48000)
+    return { error: "最终回答超过聊天交付长度限制；原结果保留，未截断发送。" };
+  return { text };
+}
 const executionStates = new Set([
   "running",
   "completed",
@@ -66,6 +100,10 @@ function executionReason(response: {
   error?: unknown;
 }) {
   const error = response.result?.error ?? response.error;
+  if (error === "image_input_unsupported")
+    return "当前执行端未声明图片输入能力，本轮未发送给模型。请选择支持图片的 Harness，并确认设备后台已更新。";
+  if (error === "image_input_too_large")
+    return "本次附件超过大小限制：单个最多 8 MiB，合计最多 16 MiB。本轮未提交执行。";
   if (
     error === "acp_update_order_mismatch" ||
     error === "acp_update_identity_mismatch"
@@ -144,14 +182,16 @@ export async function inspectHostRequest(
     ? "skipped"
     : job.replyEventId
       ? "replied"
-      : "unknown";
+      : job.deliveryError
+        ? "failed"
+        : "unknown";
   if (
     !job.skipped &&
     !job.replyEventId &&
     (await exists(`${directory}/reply.json`))
   )
     state = "completed";
-  let error: string | undefined;
+  let error: string | undefined = job.deliveryError;
   if (state === "unknown")
     for (const file of ["status.stdout.json", "run.stdout.json"]) {
       // A failed/offline status command may leave an empty legacy snapshot.
@@ -223,6 +263,7 @@ export async function runHostRequest(args: {
   let failure = "宿主配置无效，请检查所选助手的私有配置。";
   let release: (() => Promise<void>) | undefined;
   let releaseConnection: (() => Promise<void>) | undefined;
+  let inputManifest: string | undefined;
   const signal = args.signal ?? new AbortController().signal;
   try {
     const root = resolve(import.meta.dirname, "..");
@@ -387,6 +428,15 @@ export async function runHostRequest(args: {
       const action = returning ? "status" : "run";
       const commandArgs = ["--receipt", receipt];
       if (returning) commandArgs.push("--reconcile");
+      if (
+        !returning &&
+        !job.interactive &&
+        Array.isArray(source.content["org.hutian.agents-chat.attachments"]) &&
+        source.content["org.hutian.agents-chat.attachments"].length
+      )
+        throw new HostRequestError(
+          "此执行入口暂不支持附件，请从聊天的交互执行入口提交。",
+        );
       if (!returning && job.interactive) {
         if (args.context?.toolBridgeUrl && args.context?.toolBridgeToken) {
           const bridge = resolve(directory, "caller-tools.json");
@@ -425,9 +475,21 @@ export async function runHostRequest(args: {
           source.content["org.hutian.agents-chat.attachments"];
         if (Array.isArray(attachments) && attachments.length) {
           if (attachments.length > 5) throw new Error("ATTACHMENT_LIMIT");
+          if (
+            attachments.some((file: ChatFile) => file.size > 8 * 1024 * 1024) ||
+            attachments.reduce(
+              (bytes: number, file: ChatFile) => bytes + file.size,
+              0,
+            ) >
+              16 * 1024 * 1024
+          )
+            throw new HostRequestError(
+              "本次附件超过大小限制：单个最多 8 MiB，合计最多 16 MiB。",
+            );
           const files = await Promise.all(
             (attachments as ChatFile[]).map(async (file, index) => ({
               path: `attachments/${index}-${file.name.replace(/[^\p{L}\p{N}_.-]/gu, "_")}`,
+              mediaType: file.mime,
               contentBase64: (await downloadChatFile(agent, file)).toString(
                 "base64",
               ),
@@ -438,6 +500,7 @@ export async function runHostRequest(args: {
             mode: 0o600,
             flag: "wx",
           });
+          inputManifest = manifest;
           commandArgs.push("--files-manifest", manifest);
         }
       }
@@ -585,7 +648,11 @@ export async function runHostRequest(args: {
       }
       // Only publish a confirmed observation for the same native run.
       const validResponse =
-        response?.runId === job.runId && executionStates.has(response.state);
+        response?.runId === job.runId &&
+        executionStates.has(response.state) &&
+        (job.provider === undefined || response.provider === job.provider) &&
+        (response.result?.runId === undefined ||
+          response.result.runId === job.runId);
       if (validResponse) {
         await writeFileAtomic(
           `${directory}/${action}.stdout.json`,
@@ -626,7 +693,7 @@ export async function runHostRequest(args: {
         !response ||
         response.runId !== job.runId ||
         response.state !== "completed" ||
-        response.result?.state !== "completed"
+        (response.result?.state !== "completed" && !response.detailsExpired)
       ) {
         let reason = executionReason(response);
         if (response.state === "cancelled") {
@@ -652,19 +719,26 @@ export async function runHostRequest(args: {
           replySent: false,
         };
       }
-      const messages: unknown = response.result.messages;
-      failure = "Dock 已完成，但缺少可确认的最终文本，未发送替代回复。";
-      const text = Array.isArray(messages)
-        ? messages
-            .filter(
-              (message) =>
-                message?.phase === "final_answer" &&
-                typeof message.text === "string",
-            )
-            .map((message) => message.text)
-            .join("\n")
-            .trim()
-        : "";
+      const answer = response.detailsExpired
+        ? {
+            error:
+              "原运行已结束，但详细结果已过期，无法补交最终回答；未重新执行。",
+          }
+        : finalAnswer(response.result);
+      if (answer.error !== undefined) {
+        job.deliveryError = answer.error;
+        await writeFileAtomic(jobFile, JSON.stringify(job, null, 2) + "\n", {
+          mode: 0o600,
+        });
+        return {
+          state: "failed",
+          runId: job.runId,
+          reason: answer.error,
+          resumed: returning,
+          replySent: false,
+        };
+      }
+      const text = answer.text;
       if (job.silentNoUpdate && text === "[[HUTIAN_NO_UPDATE]]") {
         job.skipped = true;
         await writeFileAtomic(jobFile, JSON.stringify(job, null, 2) + "\n", {
@@ -672,8 +746,6 @@ export async function runHostRequest(args: {
         });
         return { state: "skipped", runId: job.runId, replySent: false };
       }
-      if (!text || Buffer.byteLength(text, "utf8") > 48000)
-        throw new Error("HOST_FINAL_ANSWER_UNAVAILABLE");
       await writeFileAtomic(
         prepared,
         JSON.stringify(
@@ -694,6 +766,7 @@ export async function runHostRequest(args: {
       transactionId: answer.transactionId,
     });
     job.replyEventId = sent.event_id;
+    delete job.deliveryError;
     await writeFileAtomic(jobFile, JSON.stringify(job, null, 2) + "\n", {
       mode: 0o600,
     });
@@ -708,6 +781,8 @@ export async function runHostRequest(args: {
       signal.aborted ? "已停止观察，未确认取消原运行；请查询原回执。" : failure,
     );
   } finally {
+    // Only this invocation's staging file; Matrix originals and prior jobs remain.
+    if (inputManifest) await rm(inputManifest, { force: true }).catch(() => {});
     try {
       await releaseConnection?.();
     } finally {

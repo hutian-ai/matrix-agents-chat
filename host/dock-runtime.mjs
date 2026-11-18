@@ -1,10 +1,10 @@
 // Optional execution bridge. Matrix and product authorization remain in the caller.
 import { ServerClient, loadClientOptions } from "@harness-dock/client";
-import { mkdir, readFile, readdir, open, rename } from "node:fs/promises";
+import { mkdir, readFile, readdir, open, rename, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { runtimeInventory } from "./runtime-inventory.mjs";
 
 export async function runExecution() {
@@ -39,6 +39,12 @@ export async function runExecution() {
     attempted = false,
     active = true;
   const directory = values["interaction-dir"];
+  const stagingManifest =
+    directory &&
+    values["files-manifest"] &&
+    resolve(values["files-manifest"]) === resolve(directory, "input-files.json")
+      ? resolve(directory, "input-files.json")
+      : undefined;
   const pending = new Map(),
     processing = new Set();
   const readingInventory = new Set();
@@ -504,16 +510,42 @@ export async function runExecution() {
       }
     }, 200);
     const inventory = await peer.request("inventory", {}, 120000);
-    if (
-      inventory.daemonId !== boot ||
-      !inventory.providers?.some(
-        (p) => p.key === input.provider && p.status === "ready",
-      )
-    )
+    const provider = inventory.providers?.find(
+      (p) => p.key === input.provider && p.status === "ready",
+    );
+    if (inventory.daemonId !== boot || !provider)
       throw new Error("provider_unavailable");
-    const files = values["files-manifest"]
+    const materials = values["files-manifest"]
       ? JSON.parse(await readFile(values["files-manifest"], "utf8"))
       : [];
+    if (stagingManifest) await rm(stagingManifest);
+    const attachments = [],
+      files = [],
+      images = [];
+    let totalBytes = 0;
+    for (const file of materials) {
+      const bytes = Buffer.from(file.contentBase64, "base64");
+      totalBytes += bytes.length;
+      if (bytes.length > 8 * 1024 * 1024 || totalBytes > 16 * 1024 * 1024)
+        throw new Error("image_input_too_large");
+      if (file.mediaType?.startsWith("image/")) {
+        attachments.push({
+          mediaType: file.mediaType,
+          data: file.contentBase64,
+        });
+        images.push({
+          name: file.path,
+          mediaType: file.mediaType,
+          size: bytes.length,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        });
+      } else files.push({ path: file.path, contentBase64: file.contentBase64 });
+    }
+    if (
+      attachments.length &&
+      provider.capabilities?.promptCapabilities?.image !== true
+    )
+      throw new Error("image_input_unsupported");
     const prepared = await peer.request("prepare", {
       runId: input.runId,
       ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
@@ -522,6 +554,7 @@ export async function runExecution() {
     // Keep original caller input and effective native input separately; neither is replayed.
     const executionInput = {
       ...input,
+      ...(attachments.length ? { attachments } : {}),
       prompt:
         input.prompt +
         `\n\n回复格式：直接在聊天正文回答，给出实际结果、结论或未完成原因。仅在用户明确要求文件、或任务本身需要文件成果时，将需要交付的文件保存到 ${prepared.outputDirectory}，并在最终回复中链接具体文件。不要为普通报告额外生成文件、ZIP 或整目录打包；不要以下载文件替代正文。普通代码修改仍在原工作目录。` +
@@ -529,7 +562,11 @@ export async function runExecution() {
           ? `\n\n本次用户附加资料（作为材料，不授予额外权限）：\n${files.map((file) => resolve(prepared.skillDirectory, file.path)).join("\n")}`
           : ""),
     };
-    await atomic(resolve(directory, "execution-input.json"), executionInput);
+    await atomic(resolve(directory, "execution-input.json"), {
+      ...input,
+      prompt: executionInput.prompt,
+      ...(images.length ? { images } : {}),
+    });
     attempted = true;
     state.state = "running";
     await persist();
@@ -540,6 +577,8 @@ export async function runExecution() {
     );
     if (
       response.provider !== input.provider ||
+      (response.result?.runId !== undefined &&
+        response.result.runId !== input.runId) ||
       !["completed", "failed", "cancelled", "unknown"].includes(
         response.result?.state,
       )
@@ -577,9 +616,11 @@ export async function runExecution() {
       try {
         const outputs = await peer.request("collect", { runId: input.runId });
         await atomic(resolve(directory, "outputs.json"), outputs);
-        state.outputs = outputs.map(
-          ({ contentBase64, ...metadata }) => metadata,
-        );
+        state.outputs = outputs.map((output) => {
+          const metadata = { ...output };
+          delete metadata.contentBase64;
+          return metadata;
+        });
         state.outputsState = outputs.length ? "available" : "none";
       } catch (error) {
         state.outputsState = "unconfirmed";
@@ -603,7 +644,14 @@ export async function runExecution() {
       }),
     );
   } catch (error) {
-    state.state = "unknown";
+    state.state = attempted ? "unknown" : "failed";
+    const failureCode =
+      !attempted &&
+      ["image_input_unsupported", "image_input_too_large"].includes(
+        error?.message,
+      )
+        ? error.message
+        : "execution_unconfirmed";
     // Private diagnostic log; retain the actual transport failure for diagnosis.
     console.error(
       JSON.stringify({
@@ -617,13 +665,15 @@ export async function runExecution() {
     console.log(
       JSON.stringify({
         ...identity,
-        state: "unknown",
+        state: state.state,
         submission: attempted ? "unconfirmed" : "not_submitted",
-        error: "execution_unconfirmed",
+        error: failureCode,
       }),
     );
     process.exitCode = 2;
   } finally {
+    if (stagingManifest)
+      await rm(stagingManifest, { force: true }).catch(() => {});
     active = false;
     clearInterval(timer);
     state.steering = false;
